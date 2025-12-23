@@ -1,252 +1,280 @@
 local Luxtl = loadstring(game:HttpGet("https://raw.githubusercontent.com/xHeptc/Luxware-UI-Library/main/Source.lua"))()
 
-local Luxt = Luxtl.CreateWindow("CodeSense", 6105620301)
+-- Check if GUI already exists and destroy it
+if _G.CodeSenseGUI then
+    _G.CodeSenseGUI:Destroy()
+    _G.CodeSenseGUI = nil
+end
 
-local mainTab = Luxt:Tab("Auto-Farm", 6087485864)
-local combatTab = Luxt:Tab("Combat")
-local visualTab = Luxt:Tab("Visuals")
-local settingsTab = Luxt:Tab("Settings")
+if _G.CodeSenseConnections then
+    for _, conn in pairs(_G.CodeSenseConnections) do
+        if conn then
+            pcall(function() conn:Disconnect() end)
+        end
+    end
+    _G.CodeSenseConnections = nil
+end
 
--- Variables
+-- Clear existing instances
+if _G.CodeSenseESP then
+    for player, instances in pairs(_G.CodeSenseESP) do
+        for _, obj in pairs(instances) do
+            pcall(function() obj:Destroy() end)
+        end
+    end
+    _G.CodeSenseESP = nil
+end
+
+-- Create new GUI
+_G.CodeSenseGUI = Luxtl.CreateWindow("CodeSense", 6105620301)
+
+local combatTab = _G.CodeSenseGUI:Tab("Combat", 6087485864)
+local visualTab = _G.CodeSenseGUI:Tab("Visuals")
+
+-- Services
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
 local LocalPlayer = Players.LocalPlayer
 local Camera = workspace.CurrentCamera
 
+-- Global tables
+_G.CodeSenseESP = {}
+_G.CodeSenseConnections = {}
+_G.CodeSenseTargets = {}
+
+-- States
 local ESPEnabled = false
 local AimBotEnabled = false
-local HitBoxExpanderEnabled = false
+local HitBoxEnabled = false
 local AimBotFOV = 100
 local AimBotSmoothness = 10
-local HitBoxSize = 0
+local HitBoxSize = 2
 local HitBoxPart = "Head"
 
-local TargetPlayers = {}
-local ESPInstances = {}
-local Connections = {}
-
--- Utility Functions
-local function AddPlayer(player)
-    if player ~= LocalPlayer and not TargetPlayers[player] then
-        TargetPlayers[player] = {
-            Player = player,
-            Character = nil,
-            Humanoid = nil,
-            Head = nil,
-            Torso = nil
-        }
-        
-        -- Monitor player character
-        local function CharacterAdded(character)
-            TargetPlayers[player].Character = character
-            TargetPlayers[player].Humanoid = character:WaitForChild("Humanoid", 5)
-            TargetPlayers[player].Head = character:WaitForChild("Head", 5)
-            TargetPlayers[player].Torso = character:WaitForChild("Torso", 5) or character:WaitForChild("UpperTorso", 5)
-        end
-        
-        if player.Character then
-            CharacterAdded(player.Character)
-        end
-        
-        local conn = player.CharacterAdded:Connect(CharacterAdded)
-        table.insert(Connections, conn)
-    end
+-- Utility functions
+local function WorldToScreen(pos)
+    local screenPos, onScreen = Camera:WorldToViewportPoint(pos)
+    return Vector2.new(screenPos.X, screenPos.Y), onScreen
 end
 
-local function RemovePlayer(player)
-    if TargetPlayers[player] then
-        -- Clean up ESP visuals
-        if ESPInstances[player] then
-            for _, obj in pairs(ESPInstances[player]) do
-                if obj and obj.Parent then
-                    obj:Destroy()
+local function GetClosestToMouse()
+    if not AimBotEnabled then return nil end
+    
+    local mousePos = UserInputService:GetMouseLocation()
+    local closest = nil
+    local closestDist = AimBotFOV
+    
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            local humanoid = player.Character:FindFirstChild("Humanoid")
+            local head = player.Character:FindFirstChild("Head")
+            
+            if humanoid and humanoid.Health > 0 and head then
+                local screenPos, onScreen = WorldToScreen(head.Position)
+                if onScreen then
+                    local dist = (mousePos - screenPos).Magnitude
+                    if dist < closestDist then
+                        closestDist = dist
+                        closest = player
+                    end
                 end
             end
-            ESPInstances[player] = nil
         end
-        
-        TargetPlayers[player] = nil
     end
+    
+    return closest
 end
 
-local function UpdatePlayerList()
-    for _, player in ipairs(Players:GetPlayers()) do
-        AddPlayer(player)
-    end
-end
-
--- ESP Functions
+-- ESP functions
 local function CreateESP(player)
-    if not player.Character or not player.Character:FindFirstChild("Head") then return end
+    if not player or player == LocalPlayer or not player.Character then return end
     
-    local character = player.Character
-    local head = character.Head
+    local gui = Instance.new("ScreenGui")
+    gui.Name = player.Name .. "_ESP"
+    gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    gui.ResetOnSpawn = false
+    gui.Parent = game.CoreGui
     
-    -- Create ESP visuals
-    local espFolder = Instance.new("Folder")
-    espFolder.Name = player.Name .. "_ESP"
-    espFolder.Parent = workspace
-    
-    -- 2D Box
+    -- Box
     local box = Instance.new("Frame")
     box.Name = "Box"
     box.BackgroundTransparency = 1
     box.BorderSizePixel = 2
     box.BorderColor3 = Color3.fromRGB(255, 0, 0)
     box.Size = UDim2.new(0, 100, 0, 150)
-    box.Position = UDim2.new(0, 0, 0, 0)
-    box.Parent = espFolder
+    box.Parent = gui
     
-    -- Name label
-    local nameLabel = Instance.new("TextLabel")
-    nameLabel.Name = "Name"
-    nameLabel.BackgroundTransparency = 1
-    nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-    nameLabel.TextSize = 14
-    nameLabel.Text = player.Name
-    nameLabel.Size = UDim2.new(1, 0, 0, 20)
-    nameLabel.Position = UDim2.new(0, 0, -0.15, 0)
-    nameLabel.Parent = box
+    -- Name
+    local name = Instance.new("TextLabel")
+    name.Name = "Name"
+    name.BackgroundTransparency = 1
+    name.TextColor3 = Color3.fromRGB(255, 255, 255)
+    name.TextSize = 14
+    name.Text = player.Name
+    name.Size = UDim2.new(0, 100, 0, 20)
+    name.Parent = gui
     
-    ESPInstances[player] = {box, espFolder}
+    -- Distance
+    local distance = Instance.new("TextLabel")
+    distance.Name = "Distance"
+    distance.BackgroundTransparency = 1
+    distance.TextColor3 = Color3.fromRGB(0, 255, 255)
+    distance.TextSize = 12
+    distance.Size = UDim2.new(0, 100, 0, 20)
+    distance.Parent = gui
     
-    return espFolder
+    _G.CodeSenseESP[player] = {gui = gui, box = box, name = name, distance = distance}
 end
 
 local function UpdateESP()
     if not ESPEnabled then return end
     
-    for player, data in pairs(TargetPlayers) do
-        if player and data.Character and data.Head and ESPInstances[player] then
-            local headPos, onScreen = Camera:WorldToViewportPoint(data.Head.Position)
+    for player, esp in pairs(_G.CodeSenseESP) do
+        if player and player.Character and player.Character:FindFirstChild("Humanoid") then
+            local head = player.Character:FindFirstChild("Head")
+            local humanoid = player.Character.Humanoid
             
-            if onScreen then
-                local box = ESPInstances[player][1]
-                local distance = (Camera.CFrame.Position - data.Head.Position).Magnitude
-                local scale = 1000 / distance
+            if head and humanoid.Health > 0 then
+                local screenPos, onScreen = WorldToScreen(head.Position + Vector3.new(0, 3, 0))
                 
-                box.Size = UDim2.new(0, 50 * scale, 0, 75 * scale)
-                box.Position = UDim2.new(0, headPos.X - box.Size.X.Offset/2, 0, headPos.Y - box.Size.Y.Offset/2)
-                box.Visible = true
+                if onScreen then
+                    -- Update box
+                    local distance = (Camera.CFrame.Position - head.Position).Magnitude
+                    local scale = 2000 / distance
+                    
+                    esp.box.Size = UDim2.new(0, 50 * scale, 0, 80 * scale)
+                    esp.box.Position = UDim2.new(0, screenPos.X - esp.box.Size.X.Offset / 2, 0, screenPos.Y - esp.box.Size.Y.Offset)
+                    esp.box.Visible = true
+                    
+                    -- Update name
+                    esp.name.Position = UDim2.new(0, screenPos.X - 50, 0, screenPos.Y - esp.box.Size.Y.Offset - 20)
+                    esp.name.Visible = true
+                    
+                    -- Update distance
+                    esp.distance.Text = math.floor(distance) .. " studs"
+                    esp.distance.Position = UDim2.new(0, screenPos.X - 50, 0, screenPos.Y + esp.box.Size.Y.Offset)
+                    esp.distance.Visible = true
+                else
+                    esp.box.Visible = false
+                    esp.name.Visible = false
+                    esp.distance.Visible = false
+                end
             else
-                if ESPInstances[player] and ESPInstances[player][1] then
-                    ESPInstances[player][1].Visible = false
-                end
+                esp.box.Visible = false
+                esp.name.Visible = false
+                esp.distance.Visible = false
             end
+        else
+            esp.box.Visible = false
+            esp.name.Visible = false
+            esp.distance.Visible = false
         end
     end
 end
 
--- AimBot Functions
-local function GetClosestPlayerToMouse()
-    local closestPlayer = nil
-    local closestDistance = AimBotFOV
-    
-    local mousePos = game:GetService("UserInputService"):GetMouseLocation()
-    
-    for player, data in pairs(TargetPlayers) do
-        if player and data.Character and data.Head then
-            local headPos, onScreen = Camera:WorldToViewportPoint(data.Head.Position)
-            
-            if onScreen then
-                local distance = (Vector2.new(mousePos.X, mousePos.Y) - Vector2.new(headPos.X, headPos.Y)).Magnitude
-                
-                if distance < closestDistance then
-                    closestDistance = distance
-                    closestPlayer = player
-                end
-            end
-        end
+local function RemoveESP(player)
+    if _G.CodeSenseESP[player] then
+        pcall(function()
+            _G.CodeSenseESP[player].gui:Destroy()
+        end)
+        _G.CodeSenseESP[player] = nil
     end
-    
-    return closestPlayer
 end
 
-local function AimAt(targetPosition)
-    if not targetPosition then return end
+-- AimBot functions
+local function AimAt(target)
+    if not target or not target.Character then return end
     
-    local currentCamera = workspace.CurrentCamera
+    local targetPart = HitBoxPart == "Head" and target.Character:FindFirstChild("Head") or target.Character:FindFirstChild("UpperTorso") or target.Character:FindFirstChild("Torso")
+    if not targetPart then return end
+    
+    local targetPos = targetPart.Position
+    local currentCF = Camera.CFrame
+    local targetCF = CFrame.lookAt(currentCF.Position, targetPos)
+    
     local smooth = math.max(1, AimBotSmoothness)
-    
-    local targetCFrame = CFrame.lookAt(
-        currentCamera.CFrame.Position,
-        targetPosition
-    )
-    
-    currentCamera.CFrame = currentCamera.CFrame:Lerp(
-        targetCFrame,
-        1 / smooth
-    )
+    Camera.CFrame = currentCF:Lerp(targetCF, 1 / smooth)
 end
 
--- HitBox Expander Functions
+-- HitBox functions
 local function ExpandHitBoxes()
-    if not HitBoxExpanderEnabled or HitBoxSize <= 0 then return end
+    if not HitBoxEnabled or HitBoxSize <= 0 then return end
     
-    for player, data in pairs(TargetPlayers) do
-        if player and data.Character then
-            if HitBoxPart == "Head" and data.Head then
-                local weld = data.Head:FindFirstChildWhichIsA("WeldConstraint") or data.Head:FindFirstChild("Neck")
-                if weld then
-                    weld.Enabled = false
-                end
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            local target = HitBoxPart == "Head" and player.Character:FindFirstChild("Head") or 
+                          player.Character:FindFirstChild("UpperTorso") or 
+                          player.Character:FindFirstChild("Torso")
+            
+            if target then
+                local originalSize = _G.CodeSenseTargets[player] or target.Size
+                _G.CodeSenseTargets[player] = originalSize
                 
-                data.Head.Size = Vector3.new(HitBoxSize, HitBoxSize, HitBoxSize)
-                data.Head.Transparency = 0.5
-                data.Head.Color = Color3.fromRGB(255, 0, 0)
-                data.Head.CanCollide = false
-            elseif HitBoxPart == "Torso" and data.Torso then
-                data.Torso.Size = Vector3.new(HitBoxSize, HitBoxSize, HitBoxSize)
-                data.Torso.Transparency = 0.5
-                data.Torso.Color = Color3.fromRGB(255, 0, 0)
-                data.Torso.CanCollide = false
+                target.Size = Vector3.new(HitBoxSize, HitBoxSize, HitBoxSize)
+                target.Transparency = 0.5
+                target.Color = Color3.fromRGB(255, 0, 0)
+                target.CanCollide = false
             end
         end
     end
 end
 
 local function ResetHitBoxes()
-    for player, data in pairs(TargetPlayers) do
-        if player and data.Character then
-            if data.Head then
-                data.Head.Size = Vector3.new(1, 1, 1)
-                data.Head.Transparency = 0
-                data.Head.Color = Color3.fromRGB(255, 255, 255)
-                data.Head.CanCollide = true
-                
-                local weld = data.Head:FindFirstChildWhichIsA("WeldConstraint") or data.Head:FindFirstChild("Neck")
-                if weld then
-                    weld.Enabled = true
-                end
-            end
+    for player, originalSize in pairs(_G.CodeSenseTargets) do
+        if player and player.Character then
+            local target = HitBoxPart == "Head" and player.Character:FindFirstChild("Head") or 
+                          player.Character:FindFirstChild("UpperTorso") or 
+                          player.Character:FindFirstChild("Torso")
             
-            if data.Torso then
-                data.Torso.Size = Vector3.new(2, 2, 1)
-                data.Torso.Transparency = 0
-                data.Torso.Color = Color3.fromRGB(255, 255, 255)
-                data.Torso.CanCollide = true
+            if target then
+                target.Size = originalSize
+                target.Transparency = 0
+                target.Color = Color3.fromRGB(255, 255, 255)
+                target.CanCollide = true
             end
         end
     end
+    _G.CodeSenseTargets = {}
 end
 
 -- UI Setup
 local espSection = visualTab:Section("ESP")
 espSection:Toggle("Enable ESP", function(state)
     ESPEnabled = state
-    if not state then
-        for player, instances in pairs(ESPInstances) do
-            for _, obj in pairs(instances) do
-                if obj and obj.Parent then
-                    obj:Destroy()
-                end
+    
+    if state then
+        -- Create ESP for all players
+        for _, player in pairs(Players:GetPlayers()) do
+            if player ~= LocalPlayer then
+                CreateESP(player)
             end
         end
-        ESPInstances = {}
-    else
-        for player, _ in pairs(TargetPlayers) do
+        
+        -- Player added event
+        table.insert(_G.CodeSenseConnections, Players.PlayerAdded:Connect(function(player)
             CreateESP(player)
+        end))
+        
+        -- Player removed event
+        table.insert(_G.CodeSenseConnections, Players.PlayerRemoving:Connect(function(player)
+            RemoveESP(player)
+        end))
+        
+        -- Character added event
+        for _, player in pairs(Players:GetPlayers()) do
+            table.insert(_G.CodeSenseConnections, player.CharacterAdded:Connect(function()
+                if ESPEnabled then
+                    CreateESP(player)
+                end
+            end))
         end
+    else
+        -- Remove all ESP
+        for player, _ in pairs(_G.CodeSenseESP) do
+            RemoveESP(player)
+        end
+        _G.CodeSenseESP = {}
     end
 end)
 
@@ -260,93 +288,88 @@ aimbotSection:Slider("FOV", 10, 500, function(value)
 end)
 
 aimbotSection:Slider("Smoothness", 1, 50, function(value)
-    AimBotSmoothness = value
+    AimBotSmoothness = math.max(1, value)
+end)
+
+aimbotSection:KeyBind("Aim Key", Enum.KeyCode.LeftAlt, function()
+    -- Key bind for toggle aim
 end)
 
 local hitboxSection = combatTab:Section("HitBox Expander")
-hitboxSection:Toggle("Enable HitBox Expander", function(state)
-    HitBoxExpanderEnabled = state
+hitboxSection:Toggle("Enable HitBox", function(state)
+    HitBoxEnabled = state
     if not state then
         ResetHitBoxes()
     end
 end)
 
-hitboxSection:Slider("HitBox Size", 0, 10, function(value)
+hitboxSection:Slider("Size", 1, 10, function(value)
     HitBoxSize = value
-    if HitBoxExpanderEnabled then
+    if HitBoxEnabled then
         ExpandHitBoxes()
     end
 end)
 
-hitboxSection:DropDown("HitBox Part", {"Head", "Torso"}, function(part)
-    HitBoxPart = part
-    if HitBoxExpanderEnabled then
+hitboxSection:DropDown("Part", {"Head", "Torso"}, function(selected)
+    HitBoxPart = selected
+    if HitBoxEnabled then
         ExpandHitBoxes()
     end
 end)
 
--- Initialize player tracking
-UpdatePlayerList()
-
--- Player added/removed events
-local playerAddedConn = Players.PlayerAdded:Connect(function(player)
-    AddPlayer(player)
-    if ESPEnabled then
-        CreateESP(player)
-    end
-end)
-
-local playerRemovingConn = Players.PlayerRemoving:Connect(function(player)
-    RemovePlayer(player)
-end)
-
--- Main game loop
-local renderConn = RunService.RenderStepped:Connect(function()
-    -- Update ESP
+-- Main loop
+table.insert(_G.CodeSenseConnections, RunService.RenderStepped:Connect(function()
+    -- ESP Update
     if ESPEnabled then
         UpdateESP()
     end
     
-    -- AimBot logic
-    if AimBotEnabled then
-        local closestPlayer = GetClosestPlayerToMouse()
-        if closestPlayer and TargetPlayers[closestPlayer] then
-            local targetPart = HitBoxPart == "Head" and TargetPlayers[closestPlayer].Head or TargetPlayers[closestPlayer].Torso
-            if targetPart then
-                AimAt(targetPart.Position)
-            end
+    -- AimBot
+    if AimBotEnabled and UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) then
+        local target = GetClosestToMouse()
+        if target then
+            AimAt(target)
         end
     end
     
-    -- Update HitBoxes
-    if HitBoxExpanderEnabled then
+    -- HitBox
+    if HitBoxEnabled then
         ExpandHitBoxes()
     end
-end)
+end))
 
--- Cleanup function
-local function Cleanup()
-    renderConn:Disconnect()
-    playerAddedConn:Disconnect()
-    playerRemovingConn:Disconnect()
-    
-    for _, conn in ipairs(Connections) do
-        conn:Disconnect()
-    end
-    
-    ResetHitBoxes()
-    
-    for player, instances in pairs(ESPInstances) do
-        for _, obj in pairs(instances) do
-            if obj and obj.Parent then
-                obj:Destroy()
-            end
+-- Auto-cleanup when player leaves
+table.insert(_G.CodeSenseConnections, Players.PlayerRemoving:Connect(function(player)
+    if player == LocalPlayer then
+        for _, conn in pairs(_G.CodeSenseConnections) do
+            pcall(function() conn:Disconnect() end)
+        end
+        
+        for player, esp in pairs(_G.CodeSenseESP) do
+            pcall(function() esp.gui:Destroy() end)
+        end
+        
+        ResetHitBoxes()
+        
+        _G.CodeSenseConnections = nil
+        _G.CodeSenseESP = nil
+        _G.CodeSenseTargets = nil
+        _G.CodeSenseGUI = nil
+    else
+        RemoveESP(player)
+        if _G.CodeSenseTargets[player] then
+            _G.CodeSenseTargets[player] = nil
         end
     end
-    
-    ESPInstances = {}
-    TargetPlayers = {}
+end))
+
+-- Initial ESP creation
+if ESPEnabled then
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer then
+            CreateESP(player)
+        end
+    end
 end
 
--- Game closing cleanup
-game:GetService("UserInputService").WindowFocusReleased:Connect(Cleanup)
+warn("CodeSense GUI Loaded Successfully!")
